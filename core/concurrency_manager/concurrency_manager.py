@@ -9,11 +9,9 @@ executes synergy and reflection loops.
 import threading
 import time
 
-# For demonstration, we can integrate God Awareness here
 from core.god_awareness.god_awareness import scan_for_whale_activity
 
 # Shared variable to store the latest whale alert
-# In a future phase, we might store this in a concurrency-safe data structure
 latest_whale_alert = {
     "whale_alert": False,
     "info": ""
@@ -29,17 +27,15 @@ def god_awareness_thread_func():
     """
     global latest_whale_alert
     while True:
-        # Perform a scan
         alert = scan_for_whale_activity()
         if alert["whale_alert"]:
             print(f"[GodAwareness Thread] ALERT: {alert['info']}")
             latest_whale_alert = alert
         else:
-            # We store the no-alert info as well
             latest_whale_alert = alert
 
-        # Sleep for a bit before scanning again
-        time.sleep(5)  # check every 5 seconds (placeholder)
+        # Sleep before scanning again
+        time.sleep(5)
 
 def start_god_awareness_thread():
     """
