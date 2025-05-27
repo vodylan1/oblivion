@@ -1,0 +1,10 @@
+"""
+execution_engine.py
+
+EXECUTION_ENGINE placeholder.
+Responsible for on-chain trade execution, wallet signing, transaction dispatch.
+"""
+
+def execution_engine_init():
+    """Initialize execution engine (placeholder)."""
+    pass

@@ -1,0 +1,10 @@
+"""
+wick_agent.py
+
+Agent Archetype: Wick.
+Aggressive sniper approach, short-term opportunities, quick scalp trades.
+"""
+
+def wick_agent_logic():
+    """Placeholder for Wick agent logic."""
+    pass

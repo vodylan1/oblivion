@@ -1,0 +1,10 @@
+"""
+tywin_agent.py
+
+Agent Archetype: Tywin.
+Focus on defensive strategies, conservative capital allocation.
+"""
+
+def tywin_agent_logic():
+    """Placeholder for Tywin agent logic."""
+    pass

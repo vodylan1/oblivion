@@ -1,0 +1,3 @@
+# debug.log
+
+Placeholder debug log file.

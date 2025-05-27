@@ -1,0 +1,10 @@
+"""
+machiavelli_agent.py
+
+Agent Archetype: Machiavelli.
+Focus on stealth, infiltration, alpha gathering for early entries.
+"""
+
+def machiavelli_agent_logic():
+    """Placeholder for Machiavelli agent logic."""
+    pass

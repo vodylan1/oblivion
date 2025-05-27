@@ -1,0 +1,12 @@
+"""
+main.py
+
+Entry point for the Oblivion system.
+Currently just a placeholder for integration logic.
+"""
+
+def main():
+    print("Oblivion system initialized (Phase 1 scaffold).")
+
+if __name__ == "__main__":
+    main()
