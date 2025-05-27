@@ -21,3 +21,10 @@
   1) Logs trade results after each decision,
   2) Checks for negative streaks to trigger autopatch requests,
   3) Demonstrates how emotional states can tilt final synergy outputs.
+
+
+## Phase 4
+- Integrated SCORING_ENGINE to produce a basic risk–reward score (0–100).
+- Modified synergy logic to consider both agent signals and the SCORING_ENGINE score.
+- Introduced a minimal KILL_SWITCH system that checks recent PnL in reflection_engine trade_history.
+- If total PnL in the last 5 trades < -50, the kill switch triggers a system freeze.
