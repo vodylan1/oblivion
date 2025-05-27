@@ -1,13 +1,17 @@
 """
 main.py
 
-Phase 4: Integrate SCORING_ENGINE in synergy, add KILL_SWITCH checks after reflection.
+Phase 5: 
+- We start a background thread for GodAwareness scanning.
+- We incorporate concurrency logic so we can do synergy logic in parallel.
+- If a whale alert is detected, we might alter EGO_CORE or kill switch logic in real-time.
 """
+
+import time
 
 from pipelines.data_pipeline import data_pipeline_init, fetch_sol_price
 from pipelines.execution_engine import execution_engine_init, execute_trade
 from agents.synergy_conductor import synergy_conductor_init, synergy_conductor_run
-
 from core.reflection_engine.reflection_engine import (
     reflection_engine_init,
     log_trade_outcome,
@@ -16,12 +20,16 @@ from core.reflection_engine.reflection_engine import (
 )
 from core.patch_core.patch_core import patch_core_init, request_autopatch
 from core.ego_core.ego_core import ego_core_init
-
-# NEW import
 from security.kill_switch import kill_switch_init, check_kill_switch_conditions
+from core.concurrency_manager.concurrency_manager import (
+    concurrency_manager_init, 
+    start_god_awareness_thread,
+    latest_whale_alert
+)
+from core.god_awareness.god_awareness import god_awareness_init
 
 def main():
-    # Initialize
+    # Initialize everything
     data_pipeline_init()
     execution_engine_init()
     synergy_conductor_init()
@@ -29,43 +37,54 @@ def main():
     patch_core_init()
     ego_core_init()
     kill_switch_init()
+    god_awareness_init()
+    concurrency_manager_init()
+
+    # Start the background GodAwareness thread
+    start_god_awareness_thread()
 
     # Example emotional state
     emotional_state = "neutral"
 
-    # Fetch market data
-    market_data = fetch_sol_price()
-    print(f"[Main] Market data fetched: {market_data}")
+    # We'll do a small loop of trades here, just to demonstrate concurrency
+    for _ in range(3):  # 3 trade cycles
+        market_data = fetch_sol_price()
+        print(f"\n[Main] Market data fetched: {market_data}")
 
-    # Run synergy
-    decision = synergy_conductor_run(market_data, emotional_state)
-    print(f"[Main] Synergy Conductor Decision: {decision}")
+        # Check if there's a whale alert
+        if latest_whale_alert["whale_alert"]:
+            print("[Main] Whale alert is active! Possibly adjust synergy or EGO...")
+            # If you want to trigger fear, you could do:
+            emotional_state = "fear"
 
-    # Execute trade (placeholder)
-    execute_trade(decision)
+        # Run synergy with the (possibly updated) emotional state
+        decision = synergy_conductor_run(market_data, emotional_state)
+        print(f"[Main] Synergy Conductor Decision: {decision}")
 
-    # Mock PnL: If we decide "BUY", assume profit=5, else -10
-    # (just a placeholder)
-    if "BUY" in decision:
-        profit_loss = 5.0
-    else:
-        profit_loss = -10.0
+        # Execute trade
+        execute_trade(decision)
 
-    # Log outcome
-    sol_price = market_data.get("sol_price", 0.0)
-    log_trade_outcome(decision, sol_price, profit_loss)
+        # Mock PnL
+        if "BUY" in decision:
+            profit_loss = 5.0
+        else:
+            profit_loss = -10.0
 
-    # Reflection check
-    should_patch = analyze_history_and_trigger_patch()
-    if should_patch:
-        request_autopatch()
+        # Log outcome
+        sol_price = market_data.get("sol_price", 0.0)
+        log_trade_outcome(decision, sol_price, profit_loss)
 
-    # Now we do a kill switch check
-    if check_kill_switch_conditions(trade_history):
-        print("[Main] KILL_SWITCH TRIGGERED! Freezing further operations.")
-        return  # or raise an exception, or set a global freeze flag
+        # Reflection check
+        should_patch = analyze_history_and_trigger_patch()
+        if should_patch:
+            request_autopatch()
 
-    print("[Main] Phase 4 execution finished without kill-switch trigger.")
+        # Kill switch check
+        if check_kill_switch_conditions(trade_history):
+            print("[Main] KILL_SWITCH TRIGGERED! Freezing further operations.")
+            break
 
-if __name__ == "__main__":
-    main()
+        # Sleep a bit before next trade cycle
+        time.sleep(3)
+
+    print("[Main] Phase 5 loop complete. Concurrency + GodAwareness active.")
