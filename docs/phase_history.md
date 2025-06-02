@@ -35,3 +35,19 @@
 - If suspicious activity is detected, synergy can shift to a fear emotional state in EGO_CORE.
 - synergy_conductor_run continues to incorporate SCORING_ENGINE + agent logic, but now can be influenced by real-time whale alerts.
 - The system can now handle multiple loops (or eventually multiple concurrent strategies) without blocking the on-chain scanning.
+
+### Phase 6  (2025-06-02)
+- Migrated to **solana-py 0.36.x** / **solders.keypair**.
+- `secure_wallet.py` rewritten; `execution_engine.py` can request dev-net airdrop.
+- End-to-end loop confirmed on local venv.
+
+### Phase 7-0  (2025-06-04)
+- **Scaffolds** created:  
+  `core/derivatives_engine/` and `pipelines/position_manager.py`.
+- Both print placeholder init lines.
+
+### Phase 7-1  (2025-06-05)
+- Stub methods `open_short()` / `close_short()` added.  
+- `execution_engine` routes **SHORT / CLOSE_SHORT** (mock only).  
+- `position_manager` stores in-memory positions.  
+- Synergy randomly triggers SHORT to verify plumbing.
