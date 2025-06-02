@@ -20,3 +20,9 @@ Time: 1748377685.3763037, Decision: HOLD, Price: 178.0, PnL: -10.0
 Time: 1748850151.2499003, Decision: HOLD, Price: 156.04, PnL: -10.0
 Time: 1748850154.5193067, Decision: HOLD, Price: 156.04, PnL: -10.0
 Time: 1748850157.5936105, Decision: HOLD, Price: 156.04, PnL: -10.0
+Time: 1748869601.1069114, Decision: HOLD, Price: 154.12, PnL: -10.0
+Time: 1748869604.1464815, Decision: HOLD, Price: 154.12, PnL: -10.0
+Time: 1748869607.187834, Decision: HOLD, Price: 154.12, PnL: -10.0
+Time: 1748870017.3613563, Decision: HOLD, Price: 154.0, PnL: -10.0
+Time: 1748870020.4002283, Decision: HOLD, Price: 154.0, PnL: -10.0
+Time: 1748870023.438486, Decision: HOLD, Price: 154.0, PnL: -10.0
