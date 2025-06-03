@@ -1,54 +1,72 @@
 """
-execution_engine.py  – Phase 7  
-Supports two modes:
-  • mock         : just prints
-  • real_devnet  : submits a dev-net airdrop tx (proof-of-life)
-"""
+execution_engine.py   · Phase 7-5
+───────────────────────────────────────────────────────────────────────────────
+Two run-modes:
 
-from typing import Literal, Optional
+    MODE = "mock"         → print only
+    MODE = "real_devnet"  → request 1 SOL airdrop for every BUY/SELL
+                             (acts as “on-chain ping” while we are still
+                              scaffolding proper Drift DEX calls)
+
+All BUY/SELL/CLOSE events are reported to Discord via core.notifier.
+"""
+from __future__ import annotations
+
+import time
+from typing import Literal
+
+import requests
+from solders.rpc.responses import GetBalanceResp  # type: ignore
+
+from core.notifier.notifier import notify
 from security.secure_wallet import load_keypair, get_solana_client
 
-MODE: Literal["mock", "real_devnet"] = "mock"   # default
+MODE: Literal["mock", "real_devnet"] = "real_devnet"
 
 
 # ────────────────────────────────────────────────────────────────────────────
-def execution_engine_init(mode: Optional[str] = None) -> None:
-    global MODE
-    MODE = mode or MODE
+def execution_engine_init() -> None:
     print(f"[ExecutionEngine] Initialised – mode = {MODE}")
 
 
-def execute_trade(decision: str) -> None:
-    """Route BUY/SELL/HOLD depending on MODE."""
-    if MODE == "mock":
-        print(f"[ExecutionEngine] (MOCK) {decision}")
+def _discord_echo(decision: str, lamports: int | None = None) -> None:
+    txt = f"🤖 **{decision}**"
+    if lamports is not None:
+        txt += f" – balance: {lamports/1e9:,.4f} SOL"
+    notify(txt)
+
+
+def execute_trade(decision: str, price: float | None = None) -> None:
+    """
+    Unified entry-point used by main.py and by unit tests / REPL snippets.
+    Only BUY, SELL, CLOSE_LONG, CLOSE_SHORT touch the chain; HOLD is noop.
+    """
+    if decision == "HOLD":
+        print("[ExecutionEngine] (REAL) Decision HOLD → noop.")
         return
 
-    # ------- real dev-net scaffold -------
-    if MODE == "real_devnet" and decision in {"BUY", "SELL"}:
-        perform_devnet_transaction(decision)
-    else:
-        print("[ExecutionEngine] (REAL) HOLD")
+    if MODE == "mock":
+        print(f"[ExecutionEngine] (MOCK) {decision} at ${price}")
+        _discord_echo(f"{decision} (mock) @ ${price}")
+        return
 
-
-def perform_devnet_transaction(decision: str) -> None:
-    """
-    **Not** an on-chain trade – just requests an airdrop so you
-    can see a signed transaction hit dev-net.
-    """
+    # real_devnet
     try:
-        kp      = load_keypair()
-        client  = get_solana_client("devnet")
+        kp = load_keypair()
+        client = get_solana_client("devnet")
 
-        print(f"[ExecutionEngine] Dev-net {decision} – requesting 0.2 SOL airdrop")
-        sig = client.request_airdrop(kp.pubkey(), int(0.2 * 1e9))  # lamports
-        print("   tx sig:", sig)
+        print(f"[ExecutionEngine] Requesting 1 SOL airdrop … ({decision})")
+        _discord_echo(f"{decision} – requesting devnet airdrop")
 
-        # Simple confirm-sleep
-        import time
+        sig = client.request_airdrop(kp.pubkey(), int(1e9))
         time.sleep(2)
-        bal = client.get_balance(kp.pubkey())["result"]["value"] / 1e9
-        print(f"   new balance ≈ {bal:.4f} SOL")
+
+        bal_resp: GetBalanceResp = client.get_balance(kp.pubkey())  # type: ignore
+        lamports = bal_resp.result.value  # .value for solders-types
+        print(f"[ExecutionEngine] Post-drop balance {lamports} lamports")
+
+        _discord_echo(decision, lamports=lamports)
 
     except Exception as exc:
-        print("[ExecutionEngine] ERROR", exc)
+        print(f"[ExecutionEngine] ERROR during devnet tx: {exc}")
+        notify(f"⚠️ ExecutionEngine error: `{exc!r}`")

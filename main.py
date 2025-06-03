@@ -1,57 +1,77 @@
 """
-main.py
-
-Phase 6  ➜  Phase 7-0 / 7-1
-------------------------------------
-* Regular spot-trading demo loop (Phase 6)
-* Phase 7 scaffolds promoted to “real” stubs
-  – DerivativesEngine now returns an object
-  – PositionManager placeholder still prints
+main.py   · Phase 7-5
+───────────────────────────────────────────────────────────────────────────────
+*   infinite / N-cycle trading loop with clean shutdown
+*   Discord notifications everywhere (errors, kill-switch, normal flow)
 """
+from __future__ import annotations
 
-print("[Debug] Top-level code in main.py is running!")
-
+import argparse
+import signal
+import sys
 import time
+from typing import Optional
 
-# ─── Data & Execution modules ──────────────────────────────────────────────
-from pipelines.data_pipeline import data_pipeline_init, fetch_sol_price
-from pipelines.execution_engine import (
-    execution_engine_init,
-    execute_trade,
-)
-
-# ─── Phase-6 core modules ─────────────────────────────────────────────────
-from agents.synergy_conductor import (
+from agents.synergy_conductor import (  # noqa: E402  pylint: disable=C0413
     synergy_conductor_init,
     synergy_conductor_run,
 )
-from core.reflection_engine.reflection_engine import (
-    reflection_engine_init,
-    log_trade_outcome,
-    analyze_history_and_trigger_patch,
-    trade_history,
-)
-from core.patch_core.patch_core import patch_core_init, request_autopatch
-from core.ego_core.ego_core import ego_core_init
-from security.kill_switch import kill_switch_init, check_kill_switch_conditions
-
-from core.concurrency_manager.concurrency_manager import (
+from core.concurrency_manager.concurrency_manager import (  # noqa: E402
     concurrency_manager_init,
     start_god_awareness_thread,
     latest_whale_alert,
 )
-from core.god_awareness.god_awareness import god_awareness_init
+from core.derivatives_engine.derivatives_engine import (
+    derivatives_engine_init,  # noqa: E402
+)
+from core.ego_core.ego_core import ego_core_init  # noqa: E402
+from core.notifier.notifier import notify  # noqa: E402
+from core.patch_core.patch_core import patch_core_init, request_autopatch  # noqa: E402
+from core.reflection_engine.reflection_engine import (  # noqa: E402
+    analyze_history_and_trigger_patch,
+    log_trade_outcome,
+    reflection_engine_init,
+    trade_history,
+)
+from pipelines.data_pipeline import data_pipeline_init, fetch_sol_price  # noqa: E402
+from pipelines.execution_engine import (  # noqa: E402
+    execution_engine_init,
+    execute_trade,
+)
+from pipelines.position_manager import position_manager_init  # noqa: E402
+from security.kill_switch import (  # noqa: E402
+    KillSwitchTripped,
+    check_kill_switch_conditions,
+    kill_switch_init,
+)
+from core.god_awareness.god_awareness import god_awareness_init  # noqa: E402
 
-# ─── Phase-7 modules (now “real” stubs) ────────────────────────────────────
-from core.derivatives_engine.derivatives_engine import derivatives_engine_init
-from pipelines.position_manager import position_manager_init
+
+# ────────────────────────────────────────────────────────────────────────────
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(prog="oblivion")
+    ap.add_argument("--cycles", type=int, help="run exactly N cycles then exit")
+    ap.add_argument(
+        "--continuous",
+        action="store_true",
+        help="run forever (until Ctrl-C or kill switch)",
+    )
+    return ap.parse_args()
 
 
-# ───────────────────────────────────────────────────────────────────────────
-def main() -> None:
-    print("[Main] Entered main() function. Starting Phase 6 / 7 initialization…")
+_SHUTDOWN = False
 
-    # Phase-6 initialisers
+
+def _signal_handler(signum, frame):  # noqa: D401, N802  pylint: disable=W0613
+    global _SHUTDOWN
+    _SHUTDOWN = True
+    notify("🛑 SIGINT received – graceful shutdown requested.")
+
+
+# ────────────────────────────────────────────────────────────────────────────
+def initialise_everything() -> None:
+    print("[Main] Entered main() function. Starting Phase 7 initialisation…")
+
     data_pipeline_init()
     execution_engine_init()
     synergy_conductor_init()
@@ -61,53 +81,66 @@ def main() -> None:
     kill_switch_init()
     god_awareness_init()
     concurrency_manager_init()
-
-    # Phase-7 initialisers (scaffolds → working stubs)
-    derivatives_engine = derivatives_engine_init()   # keep the object
+    derivatives_engine_init()        # online or stub
     position_manager_init()
 
-    # Background God-Awareness thread
     start_god_awareness_thread()
+    notify("✅ **Oblivion** bot online (Phase 7-5)")
 
-    print("[Main] Starting demo trading loop…")
+
+# ────────────────────────────────────────────────────────────────────────────
+def main() -> None:
+    args = parse_args()
+    total_cycles: Optional[int] = args.cycles
+    continuous = args.continuous or total_cycles is None
+
+    # Ctrl-C handler
+    signal.signal(signal.SIGINT, _signal_handler)
+
+    initialise_everything()
+
     emotional_state = "neutral"
+    cycle = 0
 
-    for cycle in range(3):
-        print(f"\n[Main] Trade cycle #{cycle + 1}")
+    try:
+        while continuous or (total_cycles and cycle < total_cycles):
+            if _SHUTDOWN:
+                break
+            cycle += 1
+            print(f"\n[Main] Trade cycle #{cycle}")
 
-        # 1 ─ Fetch market data
-        market_data = fetch_sol_price()
-        print(f"[Main] Market data fetched: {market_data}")
+            market_data = fetch_sol_price()
+            print(f"[Main] Market data fetched: {market_data}")
 
-        # 2 ─ If whale alert → FEAR overlay
-        if latest_whale_alert["whale_alert"]:
-            emotional_state = "fear"
+            if latest_whale_alert["whale_alert"]:
+                emotional_state = "fear"
 
-        # 3 ─ Decide via Synergy Conductor
-        decision = synergy_conductor_run(market_data, emotional_state)
-        print(f"[Main] Synergy Conductor Decision: {decision}")
+            decision = synergy_conductor_run(market_data, emotional_state)
+            print(f"[Main] Synergy Conductor Decision: {decision}")
 
-        # 4 ─ Execute
-        execute_trade(decision)
+            execute_trade(decision, market_data["sol_price"])
 
-        # 5 ─ Mock PnL & logging
-        profit_loss = 5.0 if "BUY" in decision else -10.0
-        log_trade_outcome(decision, market_data["sol_price"], profit_loss)
+            # mock PnL placeholder
+            pnl = 5.0 if "BUY" in decision else -10.0
+            log_trade_outcome(decision, market_data["sol_price"], pnl)
 
-        # 6 ─ Reflection & autopatch
-        if analyze_history_and_trigger_patch():
-            request_autopatch()
+            if analyze_history_and_trigger_patch():
+                request_autopatch()
 
-        # 7 ─ Kill-switch check
-        if check_kill_switch_conditions(trade_history):
-            print("[Main] KILL_SWITCH TRIGGERED! Exiting loop.")
-            break
+            check_kill_switch_conditions(trade_history)
 
-        time.sleep(3)
+            time.sleep(3)
 
-    print("[Main] Phase 7 loop complete.")
+    except KillSwitchTripped as ks:
+        print(f"[Main] {ks}")
+        notify("💀 Bot halted by kill-switch.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[Main] Top-level exception: {exc!r}")
+        notify(f"⚠️ Unhandled exception: `{exc!r}`")
+    finally:
+        notify("🟡 Oblivion loop exited (clean).")
+        print("[Main] Loop exited.")
 
-
-# ───────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     main()
