@@ -1,47 +1,77 @@
 """
 data_pipeline.py
-
-DATA_PIPELINE module.
-In Phase 2, we'll fetch a simple price feed from an external API
-(or use mock data if you prefer). This data will later expand
-to more advanced feeds (orderbooks, socials, whales, etc.).
+────────────────────────────────────────────────────────────────────────────
+Phase-8-C – live SOL price via Birdeye “simple price” endpoint.
+Falls back to last known price on API error.
 """
 
-import requests
-import time
+from __future__ import annotations
 
-def data_pipeline_init():
-    """
-    Initialize any needed configurations or API keys (placeholder).
-    """
+import time
+import requests
+from typing import Final
+
+from pathlib import Path
+import json
+
+#  ─── secrets ────────────────────────────────────────────────────────────
+_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
+_SECRETS   : Final[Path] = _REPO_ROOT / "config" / "secrets.json"
+
+_BIRDEYE_KEY: str | None = None
+_LAST_PRICE = 150.0      # sane default on first boot
+
+
+def _load_key() -> None:
+    global _BIRDEYE_KEY
+    try:
+        _BIRDEYE_KEY = json.loads(_SECRETS.read_text()).get("birdeye_api_key")
+    except Exception:
+        pass
+
+
+def data_pipeline_init() -> None:
+    """Called once from main.py."""
+    _load_key()
     print("[DataPipeline] Initialized.")
 
-def fetch_sol_price():
+
+#  ─── helpers ────────────────────────────────────────────────────────────
+def _birdeye_sol_price() -> float:
     """
-    Fetch current Solana price from CoinGecko (as an example).
-    Return a dict with relevant data.
-    If real calls are undesirable, just mock the data.
+    Query Birdeye for SOL/USD.  Returns float price or raises.
     """
+    if not _BIRDEYE_KEY:
+        raise RuntimeError("birdeye_api_key missing in secrets.json")
+
+    url = (
+        "https://public-api.birdeye.so/public/simple/price"
+        "?address=solana"
+    )
+    headers = {"X-API-KEY": _BIRDEYE_KEY}
+    resp = requests.get(url, headers=headers, timeout=4)
+    resp.raise_for_status()
+
+    data = resp.json()
+    # Expected:  {"data":{"value":155.97},"success":true}
+    return float(data["data"]["value"])
+
+
+#  ─── public API ---------------------------------------------------------
+def fetch_sol_price() -> dict[str, float]:
+    """
+    Return dict with keys   sol_price, timestamp
+    Falls back to last good price if Birdeye fails.
+    """
+    global _LAST_PRICE
+    ts = time.time()
+
     try:
-        url = "https://api.coingecko.com/api/v3/simple/price"
-        params = {
-            "ids": "solana",
-            "vs_currencies": "usd"
-        }
-        response = requests.get(url, params=params, timeout=5)
-        data = response.json()
-        # Example: {'solana': {'usd': 19.52}}
-        sol_price = data.get("solana", {}).get("usd", 0.0)
+        price = _birdeye_sol_price()
+        _LAST_PRICE = price
+        print(f"[DataPipeline] SOL price fetched from Birdeye: {price:.2f}")
+    except Exception as err:
+        print(f"[DataPipeline] Birdeye error: {err!r} → using last price.")
+        price = _LAST_PRICE
 
-        return {
-            "sol_price": sol_price,
-            "timestamp": time.time()
-        }
-
-    except Exception as e:
-        print(f"[DataPipeline] Error fetching SOL price: {e}")
-        # Return a fallback or mock data
-        return {
-            "sol_price": 999.99,  # placeholder fallback
-            "timestamp": time.time()
-        }
+    return {"sol_price": price, "timestamp": ts}
