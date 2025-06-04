@@ -8,18 +8,19 @@ Falls back to last known price on API error.
 from __future__ import annotations
 
 import time
-import requests
+import json
 from typing import Final
 
 from pathlib import Path
-import json
 
-#  ─── secrets ────────────────────────────────────────────────────────────
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
+import requests
+
+# ─── secrets ──────────────────────────────────────────────────────────────
+_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]   # ← fixed
 _SECRETS   : Final[Path] = _REPO_ROOT / "config" / "secrets.json"
 
 _BIRDEYE_KEY: str | None = None
-_LAST_PRICE = 150.0      # sane default on first boot
+_LAST_PRICE  = 150.0   # sane default if first call fails
 
 
 def _load_key() -> None:
@@ -27,7 +28,7 @@ def _load_key() -> None:
     try:
         _BIRDEYE_KEY = json.loads(_SECRETS.read_text()).get("birdeye_api_key")
     except Exception:
-        pass
+        _BIRDEYE_KEY = None
 
 
 def data_pipeline_init() -> None:
@@ -36,11 +37,9 @@ def data_pipeline_init() -> None:
     print("[DataPipeline] Initialized.")
 
 
-#  ─── helpers ────────────────────────────────────────────────────────────
+# ─── helpers ──────────────────────────────────────────────────────────────
 def _birdeye_sol_price() -> float:
-    """
-    Query Birdeye for SOL/USD.  Returns float price or raises.
-    """
+    """Query Birdeye for SOL/USD and return the float price."""
     if not _BIRDEYE_KEY:
         raise RuntimeError("birdeye_api_key missing in secrets.json")
 
@@ -52,16 +51,15 @@ def _birdeye_sol_price() -> float:
     resp = requests.get(url, headers=headers, timeout=4)
     resp.raise_for_status()
 
-    data = resp.json()
-    # Expected:  {"data":{"value":155.97},"success":true}
+    data = resp.json()          # {"data":{"value":155.97},"success":true}
     return float(data["data"]["value"])
 
 
-#  ─── public API ---------------------------------------------------------
+# ─── public API -----------------------------------------------------------
 def fetch_sol_price() -> dict[str, float]:
     """
-    Return dict with keys   sol_price, timestamp
-    Falls back to last good price if Birdeye fails.
+    Return dict with keys sol_price and timestamp.
+    Falls back to the last good price if Birdeye errors out.
     """
     global _LAST_PRICE
     ts = time.time()
