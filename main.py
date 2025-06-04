@@ -1,77 +1,69 @@
 """
-main.py   · Phase 7-5
-───────────────────────────────────────────────────────────────────────────────
-*   infinite / N-cycle trading loop with clean shutdown
-*   Discord notifications everywhere (errors, kill-switch, normal flow)
+main.py
+
+Phase-7-5 → Phase-8 scaffold
+────────────────────────────
+• Spot-trading demo loop (mock or dev-net)
+• DerivativesEngine stub
+• Phase-8 stubs wired:
+    – mutation_engine (GPT patches, later)
+    – meme_scanner     (real-time alpha feeds, later)
 """
+
 from __future__ import annotations
 
-import argparse
-import signal
-import sys
 import time
-from typing import Optional
 
-from agents.synergy_conductor import (  # noqa: E402  pylint: disable=C0413
+print("[Debug] Top-level code in main.py is running!")
+
+# ─── Data & execution modules ──────────────────────────────────────────────
+from pipelines.data_pipeline import data_pipeline_init, fetch_sol_price
+from pipelines.execution_engine import (
+    execution_engine_init,
+    execute_trade,
+)
+
+# ─── Phase-6 core modules ──────────────────────────────────────────────────
+from agents.synergy_conductor import (
     synergy_conductor_init,
     synergy_conductor_run,
 )
-from core.concurrency_manager.concurrency_manager import (  # noqa: E402
+from core.reflection_engine.reflection_engine import (
+    reflection_engine_init,
+    log_trade_outcome,
+    analyze_history_and_trigger_patch,
+    trade_history,
+)
+from core.patch_core.patch_core import patch_core_init, request_autopatch
+from core.ego_core.ego_core import ego_core_init
+from security.kill_switch import kill_switch_init, check_kill_switch_conditions
+
+from core.concurrency_manager.concurrency_manager import (
     concurrency_manager_init,
     start_god_awareness_thread,
     latest_whale_alert,
 )
-from core.derivatives_engine.derivatives_engine import (
-    derivatives_engine_init,  # noqa: E402
-)
-from core.ego_core.ego_core import ego_core_init  # noqa: E402
-from core.notifier.notifier import notify  # noqa: E402
-from core.patch_core.patch_core import patch_core_init, request_autopatch  # noqa: E402
-from core.reflection_engine.reflection_engine import (  # noqa: E402
-    analyze_history_and_trigger_patch,
-    log_trade_outcome,
-    reflection_engine_init,
-    trade_history,
-)
-from pipelines.data_pipeline import data_pipeline_init, fetch_sol_price  # noqa: E402
-from pipelines.execution_engine import (  # noqa: E402
-    execution_engine_init,
-    execute_trade,
-)
-from pipelines.position_manager import position_manager_init  # noqa: E402
-from security.kill_switch import (  # noqa: E402
-    KillSwitchTripped,
-    check_kill_switch_conditions,
-    kill_switch_init,
-)
-from core.god_awareness.god_awareness import god_awareness_init  # noqa: E402
+from core.god_awareness.god_awareness import god_awareness_init
 
+# ─── Phase-7 scaffolds ─────────────────────────────────────────────────────
+from core.derivatives_engine.derivatives_engine import derivatives_engine_init
+from pipelines.position_manager import position_manager_init, PM
 
-# ────────────────────────────────────────────────────────────────────────────
-def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(prog="oblivion")
-    ap.add_argument("--cycles", type=int, help="run exactly N cycles then exit")
-    ap.add_argument(
-        "--continuous",
-        action="store_true",
-        help="run forever (until Ctrl-C or kill switch)",
-    )
-    return ap.parse_args()
+# ─── Phase-8 stubs ─────────────────────────────────────────────────────────
+from core.mutation_engine import mutation_engine_init, propose_patch
+from intel.meme_scanner import meme_scanner_init, scan_feeds
 
+# ───────────────────────────────────────────────────────────────────────────
+def main(env: str = "mock", continuous: bool = False) -> None:
+    """
+    Entry-point.  `env` can be “mock” (default) or “devnet”.
 
-_SHUTDOWN = False
+    • continuous=False → run 3 demo cycles then exit
+    • continuous=True  → loop forever
+    """
+    print("[Main] Starting Phase-7-5 / 8 initialisation…")
 
-
-def _signal_handler(signum, frame):  # noqa: D401, N802  pylint: disable=W0613
-    global _SHUTDOWN
-    _SHUTDOWN = True
-    notify("🛑 SIGINT received – graceful shutdown requested.")
-
-
-# ────────────────────────────────────────────────────────────────────────────
-def initialise_everything() -> None:
-    print("[Main] Entered main() function. Starting Phase 7 initialisation…")
-
+    # Phase-6 initialisers
     data_pipeline_init()
     execution_engine_init()
     synergy_conductor_init()
@@ -81,66 +73,69 @@ def initialise_everything() -> None:
     kill_switch_init()
     god_awareness_init()
     concurrency_manager_init()
-    derivatives_engine_init()        # online or stub
+
+    # Phase-7 scaffolds
+    derivatives_engine_init()
     position_manager_init()
 
+    # Phase-8 stubs
+    mutation_engine_init()
+    meme_scanner_init()
+
+    # Background God-Awareness thread
     start_god_awareness_thread()
-    notify("✅ **Oblivion** bot online (Phase 7-5)")
-
-
-# ────────────────────────────────────────────────────────────────────────────
-def main() -> None:
-    args = parse_args()
-    total_cycles: Optional[int] = args.cycles
-    continuous = args.continuous or total_cycles is None
-
-    # Ctrl-C handler
-    signal.signal(signal.SIGINT, _signal_handler)
-
-    initialise_everything()
 
     emotional_state = "neutral"
-    cycle = 0
+    loop_count      = 0
+    max_cycles      = float("inf") if continuous else 3
 
-    try:
-        while continuous or (total_cycles and cycle < total_cycles):
-            if _SHUTDOWN:
-                break
-            cycle += 1
-            print(f"\n[Main] Trade cycle #{cycle}")
+    print("[Main] Entering trading loop…")
+    while loop_count < max_cycles:
+        loop_count += 1
+        print(f"\n[Main] Trade cycle #{loop_count}")
 
-            market_data = fetch_sol_price()
-            print(f"[Main] Market data fetched: {market_data}")
+        # ── market data ─────────────────────────────
+        market_data = fetch_sol_price()
+        market_data.update(scan_feeds())          # Phase-8 feed
+        print(f"[Main] Market data: {market_data}")
 
-            if latest_whale_alert["whale_alert"]:
-                emotional_state = "fear"
+        # adjust emotion if whale alert
+        if latest_whale_alert["whale_alert"]:
+            emotional_state = "fear"
 
-            decision = synergy_conductor_run(market_data, emotional_state)
-            print(f"[Main] Synergy Conductor Decision: {decision}")
+        decision = synergy_conductor_run(market_data, emotional_state)
+        print(f"[Main] Decision: {decision}")
 
-            execute_trade(decision, market_data["sol_price"])
+        price = market_data.get("sol_price", 0.0)
+        execute_trade(decision, price)
 
-            # mock PnL placeholder
-            pnl = 5.0 if "BUY" in decision else -10.0
-            log_trade_outcome(decision, market_data["sol_price"], pnl)
+        # simple PnL mock
+        pnl = 5.0 if "BUY" in decision else -10.0
+        log_trade_outcome(decision, price, pnl)
 
-            if analyze_history_and_trigger_patch():
-                request_autopatch()
+        if analyze_history_and_trigger_patch():
+            request_autopatch()
 
-            check_kill_switch_conditions(trade_history)
+        if check_kill_switch_conditions(trade_history):
+            print("[Main] Kill-switch tripped – shutting down.")
+            break
 
-            time.sleep(3)
+        time.sleep(3)
 
-    except KillSwitchTripped as ks:
-        print(f"[Main] {ks}")
-        notify("💀 Bot halted by kill-switch.")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[Main] Top-level exception: {exc!r}")
-        notify(f"⚠️ Unhandled exception: `{exc!r}`")
-    finally:
-        notify("🟡 Oblivion loop exited (clean).")
-        print("[Main] Loop exited.")
+    print("[Main] Loop complete.")
 
-# ────────────────────────────────────────────────────────────────────────────
+
+# ───────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--env", choices=["mock", "devnet"], default="mock")
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="run indefinitely instead of 3 demo cycles",
+    )
+    args = parser.parse_args()
+
+    main(env=args.env, continuous=args.continuous)
