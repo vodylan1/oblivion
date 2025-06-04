@@ -1,4 +1,8 @@
 {
-  "example_parameter": 123,
-  "placeholder": true
+  "neural_weights": {
+    "price": 0.50,
+    "meme":  0.20,
+    "whale": 0.20,
+    "vola":  0.10
+  }
 }
