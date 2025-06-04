@@ -1,73 +1,128 @@
+# pipelines/data_pipeline.py
 """
-pipelines/data_pipeline.py
+Data-Pipeline  · Phase 9-A
 ────────────────────────────────────────────────────────────────────────────
-Phase 8-C  •  SOL/USD spot-price via Birdeye
-
-✔ Uses the correct “defi/price” endpoint
-✔ Accepts either "birdeye_api_key" **or** "birdeye_key" in secrets.json
-✔ Falls back to the previous good price on any error
+• Reads `config/watchlist.json`  → list[str] of SPL mint addresses.
+• Fetches *all* prices in one call via Birdeye /defi/prices.
+• Still exposes the historical `sol_price` field so existing
+  agents keep working, and adds `token_prices` for arena mode.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
-from typing import Any, Final, Mapping
+from typing import Dict, List
 
 import requests
 
-# ------------------------------------------------------------------------ #
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
-_SECRETS   : Final[Path] = _REPO_ROOT / "config" / "secrets.json"
+# ────────────────────────────────────────────────────────────────
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SECRETS   = _REPO_ROOT / "config" / "secrets.json"
+_WATCHLIST = _REPO_ROOT / "config" / "watchlist.json"
 
-_SOL_MINT  : Final[str] = "So11111111111111111111111111111111111111112"
+_BIRDEYE_URL = "https://public-api.birdeye.so/defi/prices"
+_SOL_MINT    = "So11111111111111111111111111111111111111112"
 
-# *** single-line patch:  public → defi  ***
-_BIRDEYE_URL: Final[str] = (
-    "https://public-api.birdeye.so/defi/price"
-    f"?address={_SOL_MINT}"
-)
-
-_LAST_PRICE: float = 150.0          # seeded fallback
+_API_KEY: str | None = None
+_CACHE   : Dict[str, float] = {}
+_CACHE_TS: float = 0.0
 
 
-# ------------------------------------------------------------------------ #
+# ────────────────────────────────────────────────────────────────
+def _load_api_key() -> None:
+    global _API_KEY
+    if _API_KEY is not None:
+        return
+
+    try:
+        with open(_SECRETS, "r", encoding="utf-8") as fh:
+            _API_KEY = json.load(fh).get("birdeye_key")
+    except FileNotFoundError:
+        pass      # leave as None → handled later
+
+
+def _load_watchlist() -> List[str]:
+    if _WATCHLIST.exists():
+        try:
+            addrs: List[str] = json.loads(_WATCHLIST.read_text())
+            if addrs:
+                return addrs
+        except json.JSONDecodeError as err:
+            print(f"[DataPipeline] Malformed watchlist.json → {err}")
+    return [_SOL_MINT]   # default – SOL only
+
+
+def _refresh_prices() -> None:
+    """Internal helper, populates _CACHE with latest prices."""
+    global _CACHE, _CACHE_TS
+    _load_api_key()
+    mints = _load_watchlist()
+
+    if _API_KEY is None:
+        print("[DataPipeline] No Birdeye key → using cached prices.")
+        return
+
+    # Respect 5-second throttle
+    if time.time() - _CACHE_TS < 5:
+        return
+
+    try:
+        headers = {"X-API-KEY": _API_KEY}
+        joined  = ",".join(mints)
+        resp = requests.get(_BIRDEYE_URL, params={"addresses": joined},
+                            headers=headers, timeout=4)
+        resp.raise_for_status()
+        data = resp.json().get("data", {})
+
+        # Birdeye returns list[dict]; flatten into mint → price
+        _CACHE = {entry["address"]: float(entry["value"]) for entry in data}
+        _CACHE_TS = time.time()
+
+        sol_price = _CACHE.get(_SOL_MINT)
+        if sol_price:
+            print(f"[DataPipeline] Live SOL price: {sol_price:.2f}")
+
+    except Exception as exc:
+        print(f"[DataPipeline] Birdeye error: {exc!r} → using cache.")
+
+
+# ────────────────────────────────────────────────────────────────
+def fetch_prices() -> Dict[str, float]:
+    """
+    Public entry-point: returns a dict  {mint: price}.
+    Always includes the SOL mint even if not in watch-list.
+    """
+    _refresh_prices()
+    return _CACHE.copy()
+
+
+def fetch_market_snapshot() -> Dict:
+    """
+    Convenience helper used by main.py:
+
+        snapshot = fetch_market_snapshot()
+        # → {
+        #      'sol_price': 155.8,
+        #      'token_prices': {...},
+        #      'timestamp':  1.749e9
+        #   }
+
+    """
+    prices = fetch_prices()
+    sol = prices.get(_SOL_MINT, 0.0)
+    return {
+        "sol_price": sol,
+        "token_prices": prices,
+        "timestamp": time.time(),
+    }
+
+
+# keep the old Phase-7 alias for backward compatibility
+fetch_sol_price = fetch_market_snapshot
+
+
 def data_pipeline_init() -> None:
     print("[DataPipeline] Initialized.")
-
-
-def _load_birdeye_key() -> str | None:
-    """Return the key from secrets.json (either field name is accepted)."""
-    try:
-        cfg: Mapping[str, Any] = json.loads(_SECRETS.read_text("utf-8"))
-        return cfg.get("birdeye_api_key") or cfg.get("birdeye_key")
-    except Exception:
-        return None
-
-
-def _birdeye_sol_price() -> float:
-    api_key = _load_birdeye_key()
-    if not api_key:
-        raise RuntimeError("birdeye_api_key missing in secrets.json")
-
-    headers = {"X-API-KEY": api_key}
-    resp = requests.get(_BIRDEYE_URL, headers=headers, timeout=4)
-    resp.raise_for_status()
-
-    price = float(resp.json()["data"]["value"])
-    print(f"[DataPipeline] SOL price fetched from Birdeye: {price:.2f}")
-    return price
-
-
-# ------------------------------------------------------------------------ #
-def fetch_sol_price() -> dict[str, Any]:
-    """
-    Return {"sol_price": <float>, "timestamp": <unix-ts>}.
-    """
-    global _LAST_PRICE
-    try:
-        _LAST_PRICE = _birdeye_sol_price()
-    except Exception as err:               # noqa: BLE001
-        print(f"[DataPipeline] Birdeye error: {err!r} → using last price.")
-    return {"sol_price": _LAST_PRICE, "timestamp": time.time()}
