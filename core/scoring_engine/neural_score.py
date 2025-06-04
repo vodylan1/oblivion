@@ -1,58 +1,56 @@
 """
-core/scoring_engine/neural_score.py
-────────────────────────────────────────────────────────────────────────────
-Phase-8 stub – “neural” composite score.
+neural_score.py  – Phase 8-B
+Dynamic 0–100 score =  w_price·f(price) + w_meme·f(hype) + bias
 
-For now we keep it deterministic and *very* light-weight:
-
-    score =
-        0.60 × price_score +
-        0.25 × meme_hype_score +
-        0.15 × whale_risk_penalty
-
-• price_score replicates the legacy linear curve from scoring_engine.py
-• meme_hype_score is simply the meme_hype % already in market_data
-• whale_risk_penalty is 0 unless market_data["whale_alert"] is True
-  (then we subtract 25 points)
-
-The function signature matches the old compute_score so callers can
-switch over without changes.
+Weights live in  config/neural_weights.json  so you can tune on the fly.
 """
 
 from __future__ import annotations
 
-# --- reuse the constants from the legacy engine ---------------------------
-from core.scoring_engine.scoring_engine import (
-    IDEAL_PRICE,
-    POINTS_PER_USD,
-    MIN_SCORE,
-    MAX_SCORE,
-)
+import json
+from pathlib import Path
+from typing import Final
+
+from .scoring_engine import compute_score as price_score        # reuse
+# ────────────────────────────────────────────────────────────────
+_CFG_PATH: Final[Path] = Path(__file__).resolve().parents[2] / "config" / "neural_weights.json"
+_DEFAULTS: Final[dict[str, float]] = {"w_price": 0.5, "w_meme": 0.5, "bias": 0.0}
+
+_WEIGHTS: dict[str, float] | None = None     # lazy-loaded
 
 
-def _price_component(price: float) -> float:
-    dist = abs(price - IDEAL_PRICE)
-    raw  = MAX_SCORE - dist * POINTS_PER_USD
-    return max(MIN_SCORE, min(MAX_SCORE, raw))
+def _load_weights() -> dict[str, float]:
+    global _WEIGHTS
+    if _WEIGHTS is not None:
+        return _WEIGHTS                       # already cached
+
+    try:
+        data: dict[str, float] = json.loads(_CFG_PATH.read_text())
+        _WEIGHTS = {**_DEFAULTS, **data}
+        print(f"[NeuralScore] Weights loaded · {_WEIGHTS}")
+    except FileNotFoundError:
+        print("[NeuralScore] No weight file – using defaults")
+        _WEIGHTS = _DEFAULTS
+    except json.JSONDecodeError as err:
+        print(f"[NeuralScore] Malformed weights – {err}; using defaults")
+        _WEIGHTS = _DEFAULTS
+    return _WEIGHTS
 
 
-def compute_score(market_data: dict) -> float:        # noqa: D401
+# ────────────────────────────────────────────────────────────────
+def compute_score(market_data: dict) -> float:            # public API
     """
-    Return a float ∈ [0, 100] – higher ⇒ more attractive to BUY.
-    The weighting can be tuned / evolved later.
+    Returns composite score ∈ [0, 100].
+    Currently consumes:
+        • sol_price   – classic price attractiveness curve
+        • meme_hype   – Birdeye hype %, linearly scaled
     """
-    price       = float(market_data.get("sol_price", 0.0))
-    meme_hype   = float(market_data.get("meme_hype", 0.0))        # already 0-100
-    whale_panic = 25.0 if market_data.get("whale_alert") else 0.0
+    w = _load_weights()
 
-    price_score = _price_component(price)
-    meme_score  = meme_hype                       # simple 1-for-1 mapping
-    risk_penalty = whale_panic
+    price_part = price_score(market_data)                 # already 0-100
+    hype_raw   = float(market_data.get("meme_hype", 0.0)) # 0-100
+    hype_part  = max(0.0, min(100.0, hype_raw))
 
-    combined = (
-        0.60 * price_score +
-        0.25 * meme_score  -
-        0.15 * risk_penalty
-    )
-
-    return max(MIN_SCORE, min(MAX_SCORE, round(combined, 2)))
+    score = w["w_price"] * price_part + w["w_meme"] * hype_part + w["bias"]
+    # clamp
+    return max(0.0, min(100.0, round(score, 2)))

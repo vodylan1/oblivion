@@ -1,0 +1,5 @@
+{
+  "w_price": 0.60,      // 60 % weight on the classic price curve
+  "w_meme":  0.40,      // 40 % weight on meme-hype (Birdeye)
+  "bias":    0.0        // reserved for future macro bias
+}
