@@ -1,10 +1,11 @@
 """
 pipelines/data_pipeline.py
-──────────────────────────────────────────────────────────────────────────────
-Phase 8-C
+────────────────────────────────────────────────────────────────────────────
+Phase 8-C  •  SOL/USD spot-price via Birdeye
 
-* Live SOL ↔ USD spot-price via Birdeye “simple/price” endpoint
-* Fallback to last-known price if the call fails
+▪ Fetches the live SOL price from Birdeye’s “simple/price” endpoint
+▪ Uses the correct mint address for wrapped SOL
+▪ Falls back to the last good price if the call fails
 """
 
 from __future__ import annotations
@@ -17,11 +18,11 @@ from typing import Any, Final, Mapping
 import requests
 
 
-# ─── constants ──────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 _SECRETS   : Final[Path] = _REPO_ROOT / "config" / "secrets.json"
 
-# Correct SPL-mint address for SOL (wrapped SOL)
+# Correct SPL mint for SOL (wrapped SOL)
 _SOL_MINT: Final[str] = "So11111111111111111111111111111111111111112"
 
 _BIRDEYE_URL: Final[str] = (
@@ -29,34 +30,31 @@ _BIRDEYE_URL: Final[str] = (
     f"?address={_SOL_MINT}"
 )
 
-_LAST_PRICE: float = 150.0          # seed fallback
+_LAST_PRICE: float = 150.0     # seeded fallback
 
 
-# ─── helpers ────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────
 def data_pipeline_init() -> None:
     print("[DataPipeline] Initialized.")
 
 
 def _load_birdeye_key() -> str | None:
-    """
-    Return the `birdeye_api_key` from config/secrets.json
-    or None if not present / malformed.
-    """
+    """Return the Birdeye API key from config/secrets.json or None."""
     try:
         cfg: Mapping[str, Any] = json.loads(_SECRETS.read_text("utf-8"))
         return cfg.get("birdeye_api_key")
-    except Exception:          # FileNotFound, JSONDecodeError, …
+    except Exception:        # File missing or malformed
         return None
 
 
 def _birdeye_sol_price() -> float:
     """
-    Query Birdeye’s free ‘simple/price’ endpoint.
+    Query Birdeye and return the latest SOL/USD price.
 
     Raises
     ------
-    RuntimeError   if the API key is missing
-    requests.HTTPError   if Birdeye returns non-200
+    RuntimeError         If the API key is missing.
+    requests.HTTPError   If Birdeye responds with non-200.
     """
     api_key = _load_birdeye_key()
     if not api_key:
@@ -71,22 +69,16 @@ def _birdeye_sol_price() -> float:
     return price
 
 
-# ─── public façade ─────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────
 def fetch_sol_price() -> dict[str, Any]:
     """
-    Universal price fetch used by `main.py`.
+    Public helper imported by main.py.
 
-    Returns
-    -------
-    dict
-        {
-            "sol_price": 156.04,
-            "timestamp": 1_749_044_808.123
-        }
+    Returns a dict ⇒  {"sol_price": 156.74, "timestamp": 1_749_044_808.12}
     """
     global _LAST_PRICE
     try:
         _LAST_PRICE = _birdeye_sol_price()
-    except Exception as err:      # noqa: BLE001  (catch - log - carry on)
+    except Exception as err:        # noqa: BLE001
         print(f"[DataPipeline] Birdeye error: {err!r} → using last price.")
     return {"sol_price": _LAST_PRICE, "timestamp": time.time()}
