@@ -1,22 +1,15 @@
 # pipelines/data_pipeline.py
 """
-Data-Pipeline  · Phase 9-C
+Phase 9-C  ·  Market data pipeline
 ────────────────────────────────────────────────────────────────────────────
-• Loads a watch-list from  config/watchlist.json  (array of SPL mint addrs)
-• Fetches prices per-token with Birdeye  /defi/price?address=<mint>
-• Per-mint local cache (5 s TTL).  429 responses trigger a 60 s cool-off.
-• Exposes helper:
-
-      snapshot = fetch_market_snapshot()
-      # {
-      #   'sol_price'   : 157.4,
-      #   'token_prices': {mint: price, …},
-      #   'timestamp'   : 1.749e9
-      # }
-
-Compatible with the rest of the stack (main.py still calls
-`fetch_sol_price` alias).
+• loads  config/watchlist.json      → list[str] SPL mints
+• filters tokens through Rug-Checker
+• fetches live prices (Birdeye /defi/price) per SAFE token
+• exposes:
+      fetch_prices()          -> {mint: price}
+      fetch_market_snapshot() -> {sol_price, token_prices, timestamp}
 """
+
 from __future__ import annotations
 
 import json
@@ -26,132 +19,117 @@ from typing import Dict, List
 
 import requests
 
-# ─── repo paths ───────────────────────────────────────────────────────────
-_REPO_ROOT  = Path(__file__).resolve().parents[1]
-_SECRETS_F  = _REPO_ROOT / "config" / "secrets.json"
-_WATCHLIST_F = _REPO_ROOT / "config" / "watchlist.json"
+# ─── paths ────────────────────────────────────────────────────────────────
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SECRETS   = _REPO_ROOT / "config" / "secrets.json"
+_WATCHLIST = _REPO_ROOT / "config" / "watchlist.json"
 
 # ─── constants ────────────────────────────────────────────────────────────
-_SOL_MINT     = "So11111111111111111111111111111111111111112"
-_BIRDEYE_URL  = "https://public-api.birdeye.so/defi/price"
-_CACHE_TTL    = 5          # seconds for a normal OK fetch
-_COOL_OFF_429 = 60         # seconds to wait after a rate-limit
+_SOL_MINT  = "So11111111111111111111111111111111111111112"
+_BIRDEYE   = "https://public-api.birdeye.so/defi/price"
 
-# ─── globals (populated lazily) ───────────────────────────────────────────
+# ─── API-key ──────────────────────────────────────────────────────────────
 _API_KEY: str | None = None
-_CACHE  : Dict[str, Dict[str, float]] = {}    # mint ➞ {"price": .., "ts": .., "error_until": ..}
-
-
-# ─── helpers ──────────────────────────────────────────────────────────────
 def _load_api_key() -> None:
     global _API_KEY
     if _API_KEY is not None:
         return
     try:
-        data = json.loads(_SECRETS_F.read_text())
-        _API_KEY = data.get("birdeye_api_key") or data.get("birdeye_key")
-    except FileNotFoundError:
-        pass
+        _API_KEY = json.loads(_SECRETS.read_text())["birdeye_api_key"]
+    except Exception:
+        _API_KEY = None
 
-
+# ─── watch-list loader ────────────────────────────────────────────────────
 def _load_watchlist() -> List[str]:
-    if not _WATCHLIST_F.exists():
+    try:
+        mints: List[str] = json.loads(_WATCHLIST.read_text())
+        return mints or [_SOL_MINT]
+    except Exception:
         return [_SOL_MINT]
 
-    try:
-        arr = json.loads(_WATCHLIST_F.read_text())
-        return arr if isinstance(arr, list) and arr else [_SOL_MINT]
-    except json.JSONDecodeError as err:
-        print(f"[DataPipeline] watchlist.json malformed → {err}")
-        return [_SOL_MINT]
+# ─── RUG-CHECK integration ────────────────────────────────────────────────
+from security.rug_checker import rug_check
+from security.secure_wallet import get_solana_client
 
+_RPC = get_solana_client("mainnet")
+_VERDICT_CACHE: dict[str, str] = {}
 
-def _need_fetch(mint: str) -> bool:
-    """True if we should hit Birdeye for *mint* now."""
-    rec = _CACHE.get(mint)
-    now = time.time()
-    if rec is None:
-        return True
-    if rec.get("error_until", 0) > now:       # still cooling off
-        return False
-    return now - rec["ts"] > _CACHE_TTL       # stale
-
-
-def _fetch_single(mint: str) -> None:
-    _load_api_key()
-
-    if _API_KEY is None:
-        return                               # leave price missing (== 0)
-
-    headers = {"X-API-KEY": _API_KEY}
-    try:
-        resp = requests.get(_BIRDEYE_URL, params={"address": mint},
-                            headers=headers, timeout=4)
-        if resp.status_code == 429:
-            raise requests.HTTPError("429 Too Many Requests", response=resp)
-        resp.raise_for_status()
-
-        price = float(resp.json()["data"]["value"])
-        _CACHE[mint] = {"price": price,
-                        "ts": time.time(),
-                        "error_until": 0.0}
-
-        if mint == _SOL_MINT:
-            print(f"[DataPipeline] Live SOL price: {price:.2f}")
-
-    except (KeyError, ValueError) as exc:          # malformed JSON
-        print(f"[DataPipeline] Birdeye {mint[:4]}… err → {exc!r}")
-        _CACHE[mint] = {"price": 0.0,
-                        "ts": time.time(),
-                        "error_until": time.time() + _CACHE_TTL}
-
-    except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 429:
-            print(f"[DataPipeline] Birdeye 429 for {mint[:4]}… – cooling { _COOL_OFF_429 } s")
-            _CACHE[mint] = {"price": _CACHE.get(mint, {}).get("price", 0.0),
-                            "ts": time.time(),
-                            "error_until": time.time() + _COOL_OFF_429}
-        else:
-            print(f"[DataPipeline] Birdeye {mint[:4]}… HTTP err → {exc!r}")
-            _CACHE[mint] = {"price": 0.0,
-                            "ts": time.time(),
-                            "error_until": time.time() + _CACHE_TTL}
-
-    except requests.RequestException as exc:
-        print(f"[DataPipeline] Birdeye net err {mint[:4]}… → {exc!r}")
-        _CACHE[mint] = {"price": 0.0,
-                        "ts": time.time(),
-                        "error_until": time.time() + _CACHE_TTL}
-
-
-# ─── public API ───────────────────────────────────────────────────────────
-def fetch_prices() -> Dict[str, float]:
-    """
-    Return {mint: price}.  All mints in watch-list are guaranteed to appear
-    (price==0.0 if unavailable).
-    """
-    mints = _load_watchlist()
+def _filter_safe_tokens(mints: List[str]) -> List[str]:
+    safe: List[str] = []
     for m in mints:
-        if _need_fetch(m):
-            _fetch_single(m)
+        verdict = _VERDICT_CACHE.get(m)
+        if verdict is None:
+            verdict = rug_check(m, _RPC)
+            _VERDICT_CACHE[m] = verdict
+            print(f"[RugCheck] {m[:4]}… verdict → {verdict}")
+        if verdict == "SAFE":
+            safe.append(m)
+    return safe
 
-    # expose only the numeric price
-    return {m: _CACHE.get(m, {}).get("price", 0.0) for m in mints}
+# ─── price cache ──────────────────────────────────────────────────────────
+_PRICE: Dict[str, float] = {}          # mint → last price
+_COOL_OFF: Dict[str, float] = {}       # mint → 429 retry-after ts
+_MIN_POLL = 5                          # seconds between calls per mint
 
+def _fetch_price(mint: str) -> None:
+    """
+    Update _PRICE[mint] in-place.  Handles 429 & empty payloads.
+    """
+    import time
+
+    # 429 back-off ----------------------------------------------------------
+    if mint in _COOL_OFF and time.time() < _COOL_OFF[mint]:
+        return
+
+    headers = {"X-API-KEY": _API_KEY} if _API_KEY else {}
+    try:
+        r = requests.get(_BIRDEYE, params={"address": mint}, headers=headers, timeout=4)
+        if r.status_code == 429:
+            print(f"[DataPipeline] Birdeye 429 for {mint[:4]}… – cooling 60 s")
+            _COOL_OFF[mint] = time.time() + 60
+            return
+        r.raise_for_status()
+        val = r.json()["data"]["value"]      # may KeyError
+        _PRICE[mint] = float(val)
+        if mint == _SOL_MINT:
+            print(f"[DataPipeline] Live SOL price: {val:.2f}")
+    except KeyError:
+        print(f"[DataPipeline] Birdeye {mint[:4]}… err → KeyError('value')")
+    except Exception as exc:                 # noqa: BLE001
+        print(f"[DataPipeline] Birdeye fetch {mint[:4]}… failed → {exc!r}")
+
+def _refresh_prices() -> None:
+    """
+    Refresh SAFE tokens, keeping a per-mint 5 s throttle.
+    """
+    _load_api_key()
+    mints = _filter_safe_tokens(_load_watchlist())
+
+    now = time.time()
+    for m in mints:
+        if now - _COOL_OFF.get(m, 0) < 0:     # still cooling
+            continue
+        if now - _PRICE.get(f"{m}_ts", 0) < _MIN_POLL:
+            continue
+        _fetch_price(m)
+        _PRICE[f"{m}_ts"] = now
+
+# ─── public helpers ───────────────────────────────────────────────────────
+def fetch_prices() -> Dict[str, float]:
+    _refresh_prices()
+    return {k: v for k, v in _PRICE.items() if not k.endswith("_ts")}
 
 def fetch_market_snapshot() -> Dict:
-    """Wrapper used by main.py."""
     prices = fetch_prices()
+    sol    = prices.get(_SOL_MINT, 0.0)
     return {
-        "sol_price": prices.get(_SOL_MINT, 0.0),
+        "sol_price": sol,
         "token_prices": prices,
         "timestamp": time.time(),
     }
 
-
-# Back-compat alias for older imports
+# legacy alias for older code
 fetch_sol_price = fetch_market_snapshot
-
 
 def data_pipeline_init() -> None:
     print("[DataPipeline] Initialized.")

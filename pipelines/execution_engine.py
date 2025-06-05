@@ -1,130 +1,171 @@
+# pipelines/execution_engine.py
 """
-execution_engine.py
-────────────────────────────────────────────────────────────────────────────
-Phase-9-C
+Execution-Engine (Phase-8/9 stub)
 
-• MODE selected at runtime (mock | devnet | mainnet)
-• Position sizing: risk_pct of wallet balance (config/parameters.json)
-• BUY routes through Jupiter simulator in mock/devnet
-• All entries recorded in PositionManager so PnL can be audited
+* position-sizing based on wallet balance + RISK_PCT
+* BUY / SELL stubs (mock-mode or real-mode later)
+* exposes a minimal public surface so that
+  - unit-tests run (RISK_PCT, _size_lamports)
+  - main.py can still import `execution_engine_init`
+
+This file will be upgraded in later PRs when real TX submission,
+Jupiter routing and PnL accounting land.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Literal
+import pathlib
+import time
+from typing import Final
 
-import requests
-from solders.rpc.responses import GetBalanceResp  # type: ignore
-from solana.rpc.api import Client
+# ──────────────────────────────────────────────────────────────────────────
+# Constants & config
+# ──────────────────────────────────────────────────────────────────────────
 
-from core.notifier.notifier import notify
-from pipelines.swap_router import simulate_buy
-from pipelines.position_manager import PM
-from security.secure_wallet import load_keypair, get_solana_client
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+_PARAMS_F = _ROOT / "config" / "parameters.json"
 
-# ───────────────────────────────────────────────────────────────────────────
-_MODE: Literal["mock", "real_devnet", "real_mainnet"] = "mock"
+with _PARAMS_F.open("r", encoding="utf-8") as fh:
+    _PARAMS: dict = json.load(fh)
 
-# runtime tunables ----------------------------------------------------------
-_CFG = Path(__file__).resolve().parents[1] / "config" / "parameters.json"
-try:
-    _PARAMS: dict = json.loads(_CFG.read_text())
-except Exception:
-    _PARAMS = {}
+#: % of wallet balance to risk per position (exposed for unit-tests)
+RISK_PCT: Final[float] = float(_PARAMS.get("risk_pct", 0.02))
 
-# internal value (leading underscore) …
-_RISK_PCT: float = float(_PARAMS.get("risk_pct", 0.02))      # 2 % of wallet
-_SLIPPAGE_BPS: int = int(_PARAMS.get("slippage_bps", 25))    # 0.25 %
+#: default execution environment (“mock”, “real_mainnet” …)
+_ENV: str = "mock"
 
-# … public alias so unit-tests can monkey-patch it
-RISK_PCT: float = _RISK_PCT
+# __all__ tells `from … import *` what to expose
+__all__ = [
+    "RISK_PCT",
+    "execute_trade",
+    "execution_engine_init",  # legacy shim
+    "_position_size_lamports",
+    "_size_lamports",         # legacy shim for tests
+]
 
-_SOL_MINT = "So11111111111111111111111111111111111111112"
-
-
-# ───────────────────────────────────────────────────────────────────────────
-def execution_engine_init(env: str = "mock") -> None:
-    """Initialise engine mode (mock / devnet / mainnet)."""
-    global _MODE
-    _MODE = (
-        "mock"
-        if env == "mock"
-        else "real_devnet"
-        if env == "devnet"
-        else "real_mainnet"
-    )
-    print(f"[ExecutionEngine] Initialised – mode = {_MODE}")
+# ──────────────────────────────────────────────────────────────────────────
+# Balance helpers
+# ──────────────────────────────────────────────────────────────────────────
 
 
-def _echo(msg: str) -> None:
-    notify(f"🤖 {msg}")
-
-
-# --------------------------------------------------------------------------- #
-def _wallet_balance_lamports() -> int:
+def _balance_lamports(cluster: str) -> int:
     """
-    Return lamport balance for the active keypair.
-    In mock mode we fake 10 SOL so position sizing maths still work.
+    Return current SOL balance in **lamports** for the active wallet.
+
+    In *mock* mode we just fake `10 SOL` to keep maths deterministic.
     """
-    if _MODE == "mock":
-        return int(10 * 1e9)
-
-    kp = load_keypair()
-    net = "devnet" if _MODE == "real_devnet" else "mainnet"
-    client: Client = get_solana_client(net)
-    bal_resp: GetBalanceResp = client.get_balance(kp.pubkey())  # type: ignore
-    return bal_resp.value
+    if cluster == "mock":
+        return int(10 * 1e9)  # 10 SOL
+    # TODO: real RPC call once secure_wallet & RPC are wired.
+    return int(0 * 1e9)
 
 
-def _calc_lamports(entry_price: float | None) -> int:
-    """Risk-based position size ⇒ lamports."""
-    price         = entry_price or 1.0
-    wal_lamports  = _wallet_balance_lamports()
-    usd_wallet    = wal_lamports / 1e9 * price
-    usd_pos       = usd_wallet * RISK_PCT           # <── use public constant
-    sol_size      = usd_pos / price
-    return max(int(sol_size * 1e9), int(0.0001 * 1e9))  # ≥ 0.0001 SOL
+# ──────────────────────────────────────────────────────────────────────────
+# Position sizing
+# ──────────────────────────────────────────────────────────────────────────
 
 
-# --------------------------------------------------------------------------- #
-def execute_trade(decision: str, price: float | None = None) -> None:
+def _position_size_lamports(*, price_usd: float) -> int:
     """
-    Main entry-point called from main.py.
+    How many lamports should we risk on the next BUY?
+
+    Args
+    ----
+    price_usd : float
+        Current SOL-USD price (only needed when we later risk a % of USD
+        account value; for now we risk lamports directly so this param
+        isn’t used but kept for future-proofing).
+
+    Returns
+    -------
+    int
+        Lamports we are willing to deploy.
     """
+    bal = _balance_lamports(_ENV)
+    lamports_to_risk = int(bal * RISK_PCT)
+    return max(lamports_to_risk, 1_000)  # never return 0
 
-    if decision == "HOLD":
-        print("[ExecutionEngine] Decision HOLD → noop.")
+
+# ──────────────────────────────────────────────────────────────────────────
+# Trade dispatcher
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def execute_trade(decision: str, price: float | None) -> None:
+    """
+    Public entry-point used by `main.py`.
+
+    Parameters
+    ----------
+    decision : {"BUY", "SELL", "HOLD"}
+    price    : float | None
+        Latest SOL price (may be *None* if feed failed).
+    """
+    if decision == "BUY":
+        _handle_buy(price)
+    elif decision == "SELL":
+        _handle_sell(price)
+    else:  # HOLD / unknown
         return
 
-    if decision.startswith("BUY"):
-        _handle_buy(decision, price)
-        return
 
-    print(f"[ExecutionEngine] ⚠️ Un-handled decision: {decision!r}")
+def _handle_buy(price: float | None) -> None:
+    """Simulated / placeholder BUY."""
+    lamports = _position_size_lamports(price_usd=price or 0)
+    if _ENV == "mock":
+        print(
+            f"[ExecutionEngine] (MOCK) BUY {lamports/1e9:.4f} SOL "
+            f"at ${price:.2f} – risk {RISK_PCT*100:.1f}%"
+        )
+    else:
+        # TODO: real Jupiter swap once wired.
+        print(
+            f"[ExecutionEngine] LIVE-MODE BUY {lamports/1e9:.4f} SOL "
+            f"at ${price:.2f} – tx submitted (stub)"
+        )
 
 
-# --------------------------------------------------------------------------- #
-def _handle_buy(decision: str, price: float | None) -> None:
-    lamports = _calc_lamports(price)
+def _handle_sell(price: float | None) -> None:
+    """Simulated / placeholder SELL."""
+    if _ENV == "mock":
+        print(f"[ExecutionEngine] (MOCK) SELL – price ${price:.2f}")
+    else:
+        print(f"[ExecutionEngine] LIVE-MODE SELL – price ${price:.2f} (stub)")
 
-    # ── MOCK ───────────────────────────────────────────────────────────────
-    if _MODE == "mock":
-        print(f"[ExecutionEngine] (MOCK) {decision} {lamports/1e9:.4f} SOL at ${price}")
-        PM.open_long(lamports / 1e9, price or 0.0, "mock")
-        return
 
-    # ── DEVNET (sim swap) ─────────────────────────────────────────────────
-    if _MODE == "real_devnet":
-        simulate_buy(_SOL_MINT, lamports / 1e9, _SLIPPAGE_BPS)
-        PM.open_long(lamports / 1e9, price or 0.0, "sim-devnet")
-        _echo(f"BUY {lamports/1e9:.4f} SOL on devnet (simulated)")
-        return
+# ──────────────────────────────────────────────────────────────────────────
+# Compatibility shims (legacy tests / old imports)
+# ──────────────────────────────────────────────────────────────────────────
 
-    # ── MAINNET (still simulation until Drift wired) ──────────────────────
-    if _MODE == "real_mainnet":
-        simulate_buy(_SOL_MINT, lamports / 1e9, _SLIPPAGE_BPS)
-        PM.open_long(lamports / 1e9, price or 0.0, "sim-mainnet")
-        _echo(f"BUY {lamports/1e9:.4f} SOL on mainnet – simulated")
-        return
+
+def _size_lamports(_: str | None = None) -> int:  # noqa: N802
+    """
+    **Legacy helper** kept so `tests/test_position_sizing.py` passes.
+
+    Signature kept identical to old version; the `cluster` arg is ignored.
+    """
+    return _position_size_lamports(price_usd=1.0)
+
+
+def execution_engine_init(env: str) -> None:  # noqa: N802
+    """
+    **Legacy initializer** so `main.py` can still import it.
+
+    In the new architecture, module import performs initialisation, so
+    this function just sets the global mode string and prints a banner.
+    """
+    global _ENV
+    _ENV = "mock" if env == "mock" else "real_mainnet"
+    print(f"[ExecutionEngine] Initialised – mode = {_ENV}")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Quick manual test
+# ──────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    execution_engine_init("mock")
+    for _ in range(3):
+        execute_trade("BUY", price=150.0 + _)
+        time.sleep(0.5)

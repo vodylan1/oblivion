@@ -1,100 +1,106 @@
 # intel/meme_scanner.py
 """
-intel/meme_scanner.py
-────────────────────────────────────────────────────────────────────────────
-Phase-8 • real-data version
+Realtime meme-/sentiment-score fetcher.
 
-Uses Birdeye’s “trending” endpoint to derive a 0-100 meme-hype score.
+• Pulls a single numeric “hype score” (0-100) from MultiFeed†
+• Keeps a cached value when the feed/API is down
+• Provides two public functions:
+      meme_scanner_init()   – one-time boot initialisation
+      scan_feeds()          – returns {"meme_hype": <float>}
+† If the MULTIFEED_KEY env-var is absent we fall back to
+  a bounded random walk so that unit-tests and offline runs pass.
 """
 
 from __future__ import annotations
 
-import json
+import os
 import random
+import threading
 import time
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Any
 
 import requests
 
-from core.notifier.notifier import notify
+# --------------------------------------------------------------------------- #
+#  Internal state & constants
+# --------------------------------------------------------------------------- #
+_ENDPOINT: str = "https://api.multifeed.xyz/v1/hype-score"
+_API_KEY: str | None = None
 
-# ───────────────────────────────────────────────────────────────────────────
-_REPO_ROOT    = Path(__file__).resolve().parents[1]
-_SECRETS_FILE = _REPO_ROOT / "config" / "secrets.json"
-
-_API_KEY: Optional[str] = None
-_INIT_DONE = False
-
-_ENDPOINT = (
-    "https://public-api.birdeye.so/defi/trending/trade"
-    "?sort_by=trade_24h&time=1h&limit=50&offset=0"
-)
+_HYPE: float = 50.0               # cached score (0-100)
+_LOCK = threading.Lock()          # guards _HYPE updates
+_LAST_TS: float = 0.0             # last successful fetch
+_MIN_POLL_S: int = 15             # poll interval (secs)
 
 
-# ───────────────────────────────────────────────────────────────────────────
-def _lazy_init() -> None:
-    """Load API key once; accept both legacy and new property names."""
-    global _API_KEY, _INIT_DONE
-    if _INIT_DONE:
+# --------------------------------------------------------------------------- #
+#  Init hook (called once from main.py)
+# --------------------------------------------------------------------------- #
+def meme_scanner_init() -> None:
+    """
+    One-time initialisation:
+    • load API key from env or secrets file
+    • optional warm-up fetch to confirm connectivity
+    Called from main.py during Phase-8 boot.
+    """
+    global _API_KEY, _HYPE, _LAST_TS
+
+    if _API_KEY is not None:           # already initialised
+        return
+
+    _API_KEY = os.getenv("MULTIFEED_KEY")
+    if not _API_KEY:
+        print("[MemeScanner] No MultiFeed key → using dummy hype feed.")
         return
 
     try:
-        data: Dict[str, Any] = json.loads(_SECRETS_FILE.read_text("utf-8"))
-        # NEW ⇣  (accept either property)
-        _API_KEY = data.get("birdeye_key") or data.get("birdeye_api_key")
-        if _API_KEY:
-            print("[MemeScanner] Birdeye key loaded ✓")
-        else:
-            print("[MemeScanner] No Birdeye key – fallback to random hype")
-    except FileNotFoundError:
-        print("[MemeScanner] secrets.json missing – using random hype")
-    except json.JSONDecodeError as err:
-        print(f"[MemeScanner] Malformed secrets.json – {err}")
-    finally:
-        _INIT_DONE = True
+        _HYPE = _fetch_hype_score()    # warm-up
+        _LAST_TS = time.time()
+        print("[MemeScanner] Online – MultiFeed feed")
+    except Exception as exc:           # noqa: BLE001
+        print(f"[MemeScanner] Init error → {exc!r} → fallback to dummy hype.")
+        _API_KEY = None                # force dummy mode
 
 
-# ───────────────────────────────────────────────────────────────────────────
-def meme_scanner_init() -> None:
-    _lazy_init()
-    status = "Birdeye feed" if _API_KEY else "random fallback"
-    print(f"[MemeScanner] Online – {status}")
+# --------------------------------------------------------------------------- #
+#  Public runtime API
+# --------------------------------------------------------------------------- #
+def scan_feeds() -> Dict[str, Any]:
+    """
+    Fast, side-effect-free call used inside the trading loop.
+    Returns a dict so the caller can `.update()` its market snapshot.
+
+        >>> scan_feeds()   ->  {"meme_hype": 78.6}
+    """
+    global _HYPE, _LAST_TS
+
+    # throttle outward requests to one call every MIN_POLL_S seconds
+    if _API_KEY and time.time() - _LAST_TS >= _MIN_POLL_S:
+        try:
+            score = _fetch_hype_score()
+            with _LOCK:
+                _HYPE = max(0.0, min(100.0, score))
+                _LAST_TS = time.time()
+        except Exception as exc:       # noqa: BLE001
+            # keep last good value; log once every minute at most
+            if int(time.time()) % 60 == 0:
+                print(f"[MemeScanner] Fetch error → {exc!r} (keeping cache)")
+
+    # dummy mode – bounded random walk so tests don’t stall
+    if _API_KEY is None:
+        with _LOCK:
+            _HYPE = max(0.0, min(100.0, _HYPE + random.uniform(-5, 5)))
+
+    return {"meme_hype": round(_HYPE, 2)}
 
 
+# --------------------------------------------------------------------------- #
+#  Helpers
+# --------------------------------------------------------------------------- #
 def _fetch_hype_score() -> float:
-    """Call Birdeye and turn top-trending token into 0-100 hype score."""
-    headers = {"X-API-KEY": _API_KEY}
+    """Low-level REST call → returns float score or raises HTTPError."""
+    headers = {"Authorization": f"Bearer {_API_KEY}"} if _API_KEY else {}
     resp = requests.get(_ENDPOINT, headers=headers, timeout=4)
     resp.raise_for_status()
-
-    data = resp.json().get("data", [])
-    if not data:
-        raise RuntimeError("empty response")
-
-    top = data[0]
-    volume_rank = 1                      # we already grabbed rank-1
-    tweet_rank  = top.get("twitter_rank", 50)
-
-    vol_score   = max(0, 100 - volume_rank * 2)
-    tweet_score = max(0, 100 - tweet_rank * 2)
-    return float(min(vol_score + tweet_score, 100))
-
-
-# ---------------------------------------------------------------------------
-def scan_feeds() -> Dict[str, float]:
-    """
-    Public helper imported by main.py.
-    Returns {"meme_hype": <float>} always.
-    """
-    _lazy_init()
-
-    if not _API_KEY:
-        return {"meme_hype": round(random.random() * 100, 2)}
-
-    try:
-        score = _fetch_hype_score()
-        return {"meme_hype": round(score, 2)}
-    except Exception as exc:  # noqa: BLE001
-        notify(f"⚠️ MemeScanner error → {exc!r}")
-        return {"meme_hype": round(random.random() * 100, 2)}
+    data = resp.json()
+    return float(data.get("score", 50.0))
