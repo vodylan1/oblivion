@@ -1,103 +1,126 @@
 """
 execution_engine.py
 ────────────────────────────────────────────────────────────────────────────
-• MODE is chosen at runtime from CLI:
-      main.py  --env mock|devnet|mainnet
+Phase-9-C
 
-• mock            – print-only
-• real_devnet     – 1 SOL airdrop on dev-net
-• real_mainnet    – NO on-chain write yet (placeholder)
+• MODE selected at runtime (mock | devnet | mainnet)
+• Position sizing: risk_pct of wallet balance (config/parameters.json)
+• BUY routes through Jupiter simulator in mock/devnet
+• All entries recorded in PositionManager so PnL can be audited
 """
 
 from __future__ import annotations
 
-import time
-from typing import Literal, Optional
+import json
+from pathlib import Path
+from typing import Literal
 
+import requests
 from solders.rpc.responses import GetBalanceResp  # type: ignore
 from solana.rpc.api import Client
 
 from core.notifier.notifier import notify
+from pipelines.swap_router import simulate_buy
+from pipelines.position_manager import PM
 from security.secure_wallet import load_keypair, get_solana_client
 
-# Will be overwritten by execution_engine_init()
-MODE: Literal["mock", "real_devnet", "real_mainnet"] = "mock"
+# ───────────────────────────────────────────────────────────────────────────
+_MODE: Literal["mock", "real_devnet", "real_mainnet"] = "mock"
+
+# runtime tunables ----------------------------------------------------------
+_CFG = Path(__file__).resolve().parents[1] / "config" / "parameters.json"
+try:
+    _PARAMS: dict = json.loads(_CFG.read_text())
+except Exception:
+    _PARAMS = {}
+
+_RISK_PCT: float = float(_PARAMS.get("risk_pct", 0.02))      # 2 % of wallet
+_SLIPPAGE_BPS: int = int(_PARAMS.get("slippage_bps", 25))    # 0.25 %
+
+_SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 # ───────────────────────────────────────────────────────────────────────────
 def execution_engine_init(env: str = "mock") -> None:
-    global MODE
-    MODE = (
+    """Initialise engine mode (mock / devnet / mainnet)."""
+    global _MODE
+    _MODE = (
         "mock"
         if env == "mock"
         else "real_devnet"
         if env == "devnet"
         else "real_mainnet"
     )
-    print(f"[ExecutionEngine] Initialised – mode = {MODE}")
+    print(f"[ExecutionEngine] Initialised – mode = {_MODE}")
 
 
-def _discord_echo(decision: str, lamports: Optional[int] = None) -> None:
-    txt = f"🤖 **{decision}**"
-    if lamports is not None:
-        txt += f" – balance: {lamports/1e9:,.4f} SOL"
-    notify(txt)
+def _echo(msg: str) -> None:
+    notify(f"🤖 {msg}")
+
+
+# --------------------------------------------------------------------------- #
+def _wallet_balance_lamports() -> int:
+    """
+    Return lamport balance for the active keypair.
+    In mock mode we fake 10 SOL so position sizing maths still work.
+    """
+    if _MODE == "mock":
+        return int(10 * 1e9)
+
+    kp = load_keypair()
+    net = "devnet" if _MODE == "real_devnet" else "mainnet"
+    client: Client = get_solana_client(net)
+    bal_resp: GetBalanceResp = client.get_balance(kp.pubkey())  # type: ignore
+    return bal_resp.value
+
+
+def _calc_lamports(entry_price: float | None) -> int:
+    """Risk-based position size ⇒ lamports."""
+    price = entry_price or 1.0
+    wal_lamports = _wallet_balance_lamports()
+    usd_wallet   = wal_lamports / 1e9 * price
+    usd_pos      = usd_wallet * _RISK_PCT
+    sol_size     = usd_pos / price
+    return max(int(sol_size * 1e9), int(0.0001 * 1e9))  # ≥ 0.0001 SOL
 
 
 # --------------------------------------------------------------------------- #
 def execute_trade(decision: str, price: float | None = None) -> None:
     """
-    • BUY / SELL on dev-net  → 1 SOL airdrop (keep-alive)
-    • BUY / SELL on main-net → placeholder until Drift route is wired
-    • BUY_LOW_CONF           → treated as half-size BUY for the moment
-    • HOLD                   → no-op
+    Main entry-point called from main.py.
     """
 
-    # ── Johan’s damped signal ──────────────────────────────────────────────
-    if decision == "BUY_LOW_CONF":
-        print("[ExecutionEngine] BUY_LOW_CONF → half-size BUY (same route for now)")
-        decision = "BUY"                      # size-scaling later
-
-    # ── HOLD path ──────────────────────────────────────────────────────────
     if decision == "HOLD":
         print("[ExecutionEngine] Decision HOLD → noop.")
         return
 
-    # ── MOCK path ──────────────────────────────────────────────────────────
-    if MODE == "mock":
-        print(f"[ExecutionEngine] (MOCK) {decision} at ${price}")
-        _discord_echo(f"{decision} (mock) @ ${price}")
+    if decision.startswith("BUY"):
+        _handle_buy(decision, price)
         return
 
-    # ── DEV-NET path ───────────────────────────────────────────────────────
-    if MODE == "real_devnet":
-        _airdrop_one_sol(decision)
-        return
-
-    # ── MAIN-NET placeholder ──────────────────────────────────────────────
-    if MODE == "real_mainnet":
-        print("[ExecutionEngine] (MAIN-NET) placeholder – no tx sent.")
-        notify(f"⚠️ MAIN-NET mode: {decision} (no live route yet)")
-        return
+    print(f"[ExecutionEngine] ⚠️ Un-handled decision: {decision!r}")
 
 
 # --------------------------------------------------------------------------- #
-def _airdrop_one_sol(decision: str) -> None:
-    """Request 1 SOL on dev-net and report final balance."""
-    try:
-        kp = load_keypair()
-        client: Client = get_solana_client("devnet")
+def _handle_buy(decision: str, price: float | None) -> None:
+    lamports = _calc_lamports(price)
 
-        print(f"[ExecutionEngine] Requesting 1 SOL airdrop … ({decision})")
-        sig = client.request_airdrop(kp.pubkey(), int(1e9))["result"]
-        client.confirm_transaction(sig, commitment="confirmed")
+    # ── MOCK ───────────────────────────────────────────────────────────────
+    if _MODE == "mock":
+        print(f"[ExecutionEngine] (MOCK) {decision} {lamports/1e9:.4f} SOL at ${price}")
+        PM.open_long(lamports / 1e9, price or 0.0, "mock")
+        return
 
-        bal_resp: GetBalanceResp = client.get_balance(kp.pubkey())  # type: ignore
-        lamports = bal_resp.value  # solders 0.26 attr
+    # ── DEVNET (sim swap) ─────────────────────────────────────────────────
+    if _MODE == "real_devnet":
+        simulate_buy(_SOL_MINT, lamports / 1e9, _SLIPPAGE_BPS)
+        PM.open_long(lamports / 1e9, price or 0.0, "sim-devnet")
+        _echo(f"BUY {lamports/1e9:.4f} SOL on devnet (simulated)")
+        return
 
-        print(f"[ExecutionEngine] Post-drop balance {lamports} lamports")
-        _discord_echo(decision, lamports=lamports)
-
-    except Exception as exc:  # noqa: BLE001
-        print(f"[ExecutionEngine] ERROR during dev-net tx: {exc}")
-        notify(f"⚠️ ExecutionEngine error: `{exc!r}`")
+    # ── MAINNET (still simulation until Drift wired) ──────────────────────
+    if _MODE == "real_mainnet":
+        simulate_buy(_SOL_MINT, lamports / 1e9, _SLIPPAGE_BPS)
+        PM.open_long(lamports / 1e9, price or 0.0, "sim-mainnet")
+        _echo(f"BUY {lamports/1e9:.4f} SOL on mainnet - simulated")
+        return
