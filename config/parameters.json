@@ -1,8 +1,6 @@
 {
-  "neural_weights": {
-    "price": 0.50,
-    "meme":  0.20,
-    "whale": 0.20,
-    "vola":  0.10
-  }
+  "risk_pct": 0.02,
+  "slippage_bps": 25,
+  "example_parameter": 123,
+  "placeholder": true
 }
