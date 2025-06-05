@@ -34,8 +34,12 @@ try:
 except Exception:
     _PARAMS = {}
 
+# internal value (leading underscore) …
 _RISK_PCT: float = float(_PARAMS.get("risk_pct", 0.02))      # 2 % of wallet
 _SLIPPAGE_BPS: int = int(_PARAMS.get("slippage_bps", 25))    # 0.25 %
+
+# … public alias so unit-tests can monkey-patch it
+RISK_PCT: float = _RISK_PCT
 
 _SOL_MINT = "So11111111111111111111111111111111111111112"
 
@@ -76,11 +80,11 @@ def _wallet_balance_lamports() -> int:
 
 def _calc_lamports(entry_price: float | None) -> int:
     """Risk-based position size ⇒ lamports."""
-    price = entry_price or 1.0
-    wal_lamports = _wallet_balance_lamports()
-    usd_wallet   = wal_lamports / 1e9 * price
-    usd_pos      = usd_wallet * _RISK_PCT
-    sol_size     = usd_pos / price
+    price         = entry_price or 1.0
+    wal_lamports  = _wallet_balance_lamports()
+    usd_wallet    = wal_lamports / 1e9 * price
+    usd_pos       = usd_wallet * RISK_PCT           # <── use public constant
+    sol_size      = usd_pos / price
     return max(int(sol_size * 1e9), int(0.0001 * 1e9))  # ≥ 0.0001 SOL
 
 
@@ -122,5 +126,5 @@ def _handle_buy(decision: str, price: float | None) -> None:
     if _MODE == "real_mainnet":
         simulate_buy(_SOL_MINT, lamports / 1e9, _SLIPPAGE_BPS)
         PM.open_long(lamports / 1e9, price or 0.0, "sim-mainnet")
-        _echo(f"BUY {lamports/1e9:.4f} SOL on mainnet - simulated")
+        _echo(f"BUY {lamports/1e9:.4f} SOL on mainnet – simulated")
         return
