@@ -4,3 +4,6 @@ from .base import Agent, AgentMeta, TradeSignal
 # e.g. from .machiavelli_agent import MachiavelliAgent
 from .tywin_agent import TywinAgent
 from .wick_agent import WickAgent
+from .ozymandias_agent import OzymandiasAgent
+from .johan_agent import JohanAgent
+from .genghis_agent import GenghisAgent
