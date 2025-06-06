@@ -7,3 +7,6 @@ from .wick_agent import WickAgent
 from .ozymandias_agent import OzymandiasAgent
 from .johan_agent import JohanAgent
 from .genghis_agent import GenghisAgent
+from .nyx_agent import NyxAgent
+from .inventor_agent import InventorAgent
+from .johan_shadow_agent import JohanShadowAgent
