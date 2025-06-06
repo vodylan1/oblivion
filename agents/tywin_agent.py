@@ -1,17 +1,18 @@
-"""
-Tywin – ultra-conservative guardian.
-Buys only when price is deep discount; sells when overheated.
-"""
-
-from core.scoring_engine.scoring_engine import compute_score, IDEAL_PRICE
+from agents.base import Agent, AgentMeta, TradeSignal
+from drafts.market_data import MarketData
 
 
-def tywin_agent_logic(market_data: dict) -> str:
-    score     = compute_score(market_data)
-    sol_price = market_data.get("sol_price", 0)
+class TywinAgent(Agent):
+    meta = AgentMeta(
+        name="TywinAgent",
+        version="0.1",
+        risk_profile="defensive",
+        description="Conservative capital‑preservation agent",
+    )
 
-    if sol_price < IDEAL_PRICE * 0.85:
-        return "BUY"
-    if sol_price > IDEAL_PRICE * 1.20 and score < 40:
-        return "SELL"
-    return "HOLD"
+    async def logic(self, market_data: MarketData):
+        if market_data.meme_hype > 90 or market_data.volatility > 40:
+            return TradeSignal(action="SELL", confidence=0.8, meta={"agent": self.meta.name})
+        if market_data.price < market_data.lp_depth / 10_000:
+            return TradeSignal(action="BUY_LOW_CONF", confidence=0.8, meta={"agent": self.meta.name})
+        return TradeSignal(action="HOLD", confidence=0.5, meta={"agent": self.meta.name})
